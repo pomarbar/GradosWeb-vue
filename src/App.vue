@@ -1,5 +1,19 @@
 <script setup>
 import { ref, computed } from 'vue'
+import { useAudioGrados } from './composables/useAudioGrados'
+
+// Inicializar composable de audio y gráficos del teclado
+const {
+  imagenTeclado,
+  reproduciendo,
+  gradoActivoSonando,
+  tocarGrado,
+  silenciarNota,
+  calcularSemitono,
+  oirTonalidadCompleta,
+  resetTeclado,
+  obtenerTopTeclado
+} = useAudioGrados()
 
 // Estado del flujo de portada / registro:
 // 'portada' -> pantalla inicial con créditos y botón REGISTRARSE
@@ -92,6 +106,10 @@ const modos = [
 
 // 4. Tonalidades
 const tonalidadSeleccionada = ref(null)
+const tonicaSemitonoActual = ref(7) // Por defecto DO (semitono 7)
+const topTeclado = computed(() => {
+  return obtenerTopTeclado(tonicaSemitonoActual.value)
+})
 const tonalidades = [
   { id: 'MI', nombreMayor: 'MI', nombreMenor: 'mi', semitono: 11 },
   { id: 'MIb', nombreMayor: 'MIb', nombreMenor: 're#/mib', semitono: 10 },
@@ -146,8 +164,33 @@ const seleccionarModo = (modo) => {
 
 const seleccionarTonalidad = (tonalidad) => {
   tonalidadSeleccionada.value = tonalidad.id
+  tonicaSemitonoActual.value = tonalidad.semitono
   pasoConfig.value = 'listo'
   cambiarInstruccion('Haz clic en Nuevo sonido para iniciar')
+
+  // Reproducir inmediatamente el arpegio y acorde cadencial de la tonalidad
+  const modoActual = modoSeleccionado.value !== null ? modoSeleccionado.value : 0
+  oirTonalidadCompleta(tonalidad.semitono, modoActual)
+}
+
+// Botón Oír Tonalidad
+const manejarOirTonalidad = () => {
+  if (tonalidadSeleccionada.value === null) return
+  const modoActual = modoSeleccionado.value !== null ? modoSeleccionado.value : 0
+  oirTonalidadCompleta(tonicaSemitonoActual.value, modoActual)
+}
+
+// Hover sobre los grados 1 al 8 (para escuchar la nota y verla en el teclado)
+const hoverGrado = (indiceGrado) => {
+  // Grado 0 = grado 1, Grado 7 = grado 8
+  const modoActual = modoSeleccionado.value !== null ? modoSeleccionado.value : 0
+  tocarGrado(indiceGrado, tonicaSemitonoActual.value, modoActual, true)
+}
+
+const salirGrado = (indiceGrado) => {
+  const modoActual = modoSeleccionado.value !== null ? modoSeleccionado.value : 0
+  const semitono = calcularSemitono(indiceGrado, tonicaSemitonoActual.value, modoActual)
+  silenciarNota(semitono)
 }
 
 // Fecha formateada (equivalente a formatoFecha de datosGW.js)
@@ -182,17 +225,22 @@ const entrarAlJuego = () => {
 <template>
   <div id="pantprinc"> 
         <img id="baseGrados" src="/images/baseGrados.png">
-        <img class="grado" id="grado1" src="/images/grado1.png">
-        <img class="grado" id="grado2" src="/images/grado2.png">
-        <img class="grado" id="grado3" src="/images/grado3.png">
-        <img class="grado" id="grado4" src="/images/grado4.png">
-        <img class="grado" id="grado5" src="/images/grado5.png">
-        <img class="grado" id="grado6" src="/images/grado6.png">
-        <img class="grado" id="grado7" src="/images/grado7.png">
-        <img class="grado" id="grado8" src="/images/grado8.png">
+        <img 
+          v-for="g in 8" 
+          :key="'grado-base-' + g"
+          class="grado" 
+          :id="'grado' + g" 
+          :src="'/images/grado' + g + '.png'"
+          :class="{
+            'grado-activo': gradoActivoSonando === (g - 1),
+            'grados-visibles': tonalidadSeleccionada !== null
+          }"
+          @mouseenter="hoverGrado(g - 1)"
+          @mouseleave="salirGrado(g - 1)"
+        >
 
         <img id="fondoTeclado" src="/images/fondoTeclado.png">
-        <img id="teclado" src="/images/teclado.png">
+        <img id="teclado" :src="imagenTeclado" :style="{ top: topTeclado + 'px' }">
         <img id="maskTeclado" src="/images/maskTeclado.png">
         
         <img id="fondosupA" src="/images/fondosupA.png">
@@ -265,7 +313,11 @@ const entrarAlJuego = () => {
         <div id="nuevosonido" :class="{ activo: pasoConfig === 'listo' }"></div>
         <div id="repetirsonido" :class="{ activo: pasoConfig === 'listo' }"></div>
        
-        <div id="oirtonalidad" :class="{ activo: tonalidadSeleccionada !== null }">Oir tonalidad</div>
+        <div 
+          id="oirtonalidad" 
+          :class="{ activo: tonalidadSeleccionada !== null }"
+          @click="manejarOirTonalidad"
+        >Oir tonalidad</div>
         <div id="marcador1">{{ aciertos }}</div>
         <div id="marcador2">{{ fallos }}</div>
 
@@ -505,5 +557,32 @@ const entrarAlJuego = () => {
 #nuevosonido.activo, #repetirsonido.activo, #oirtonalidad.activo {
   cursor: pointer;
   opacity: 1 !important;
+}
+
+#teclado {
+  transition: top 0.25s ease-out;
+}
+
+.grado {
+  cursor: pointer;
+  left: 340px;
+  opacity: 0.4;
+  transition: left 0.35s ease, opacity 0.2s ease, filter 0.2s ease;
+}
+
+.grado.grados-visibles {
+  left: 410px !important;
+  opacity: 0.8 !important;
+}
+
+.grado.grado-activo {
+  left: 410px !important;
+  opacity: 1 !important;
+  filter: drop-shadow(0 0 6px rgb(0, 180, 255)) brightness(1.2);
+}
+
+.grado:hover {
+  opacity: 1 !important;
+  filter: drop-shadow(0 0 6px rgb(0, 180, 255)) brightness(1.2);
 }
 </style>
