@@ -16,8 +16,11 @@ const ESCALAS = {
   3: [0, 2, 3, 5, 7, 9, 11, 12]  // Menor melódica
 }
 
+// Grados que componen la escala completa: I al VIII (índices 0 al 7)
+const ESCALA_COMPLETA = [0, 1, 2, 3, 4, 5, 6, 7]
+
 // Grados que componen el arpegio de la tónica: I, III, V, VIII (índices 0, 2, 4, 7)
-const ARPEGIO = [0, 2, 4, 7]
+const ARPEGIO_TONICA = [0, 2, 4, 7]
 
 // Coordenadas verticales de posición 'top' para centrar el teclado según la tonalidad (0=FA a 11=MI)
 const COORDS_TECLADO = [60, 73, 86, 99, 112, 125, 138, 164, 177, 190, 203, 216]
@@ -26,7 +29,7 @@ export function useAudioGrados() {
   // Gráfico actual del teclado (por defecto teclado.png)
   const imagenTeclado = ref('/images/teclado.png')
   const reproduciendo = ref(false)
-  const gradoActivoSonando = ref(null) // Grado (0..7) que está sonando en este momento
+  const gradosActivosSonando = ref([]) // Lista de grados (0..7) que están sonando en este momento
 
   // Cache para las instancias de Audio y evitar latencia
   const audioCache = new Map()
@@ -80,50 +83,96 @@ export function useAudioGrados() {
 
   // Toca un grado específico (0 = I, 1 = II, ... 7 = VIII)
   const tocarGrado = (grado, tonicaSemitono, modo = 0, verTeclado = true) => {
-    gradoActivoSonando.value = grado
+    gradosActivosSonando.value = [grado]
     const semitono = calcularSemitono(grado, tonicaSemitono, modo)
     tocarNota(semitono, verTeclado)
   }
 
-  // Reproduce el arpegio y acorde cadencial de la tonalidad seleccionada
-  const oirTonalidadCompleta = async (tonicaSemitono, modo = 0) => {
-    if (reproduciendo.value) return
-    reproduciendo.value = true
-
-    // Reproducción secuencial de las notas del arpegio (I, III, V, VIII)
-    for (const grado of ARPEGIO) {
-      tocarGrado(grado, tonicaSemitono, modo, true)
-      await new Promise(resolve => setTimeout(resolve, 850))
-    }
-
-    // Calcula el número de gráfico para el acorde completo (tonal1 a tonal24)
-    // 1..12 son mayores (FA a MI), 13..24 son menores
+  // Reproduce el acorde simultáneo de la tónica con el gráfico del teclado
+  const reproducirAcordeTonica = async (tonicaSemitono, modo = 0) => {
     let numTonal = tonicaSemitono + 1
     if (modo > 0) {
       numTonal += 12
     }
     imagenTeclado.value = `/images/tonal${numTonal}.png`
 
-    // Tocar el acorde simultáneo (las 4 notas sonando al mismo tiempo)
-    ARPEGIO.forEach(grado => {
+    // Resaltar todos los grados del acorde simultáneamente (I, III, V, VIII)
+    gradosActivosSonando.value = [...ARPEGIO_TONICA]
+
+    // Tocar el acorde simultáneo (las 4 notas de la tónica al mismo tiempo)
+    ARPEGIO_TONICA.forEach(grado => {
       const semitono = calcularSemitono(grado, tonicaSemitono, modo)
       const archivo = listaArchivosSonido[semitono]
-      const audio = new Audio('/audio/' + archivo) // nueva instancia para tocar simultáneamente
+      const audio = new Audio('/audio/' + archivo)
       audio.play().catch(() => {})
     })
 
-    // Grado activo sonando para el acorde completo: ninguno en individual o resalta el I
-    gradoActivoSonando.value = null
-
-    // Mantener el acorde un segundo y volver al teclado base
     await new Promise(resolve => setTimeout(resolve, 1100))
     imagenTeclado.value = '/images/teclado.png'
+    gradosActivosSonando.value = []
+  }
+
+  // 1. Al seleccionar una tonalidad: reproduce todos los grados de la escala (1 al 8) + acorde
+  const oirEscalaTonalidad = async (tonicaSemitono, modo = 0) => {
+    if (reproduciendo.value) return
+    reproduciendo.value = true
+
+    let semitonoAnterior = null
+
+    for (const grado of ESCALA_COMPLETA) {
+      if (semitonoAnterior !== null) {
+        silenciarNota(semitonoAnterior)
+      }
+
+      const semitonoActual = calcularSemitono(grado, tonicaSemitono, modo)
+      semitonoAnterior = semitonoActual
+
+      tocarGrado(grado, tonicaSemitono, modo, true)
+      await new Promise(resolve => setTimeout(resolve, 600))
+    }
+
+    if (semitonoAnterior !== null) {
+      silenciarNota(semitonoAnterior)
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 400))
+    await reproducirAcordeTonica(tonicaSemitono, modo)
+
+    reproduciendo.value = false
+  }
+
+  // 2. Al pulsar el botón "Oír Tonalidad": reproduce el arpegio (grados 1, 3, 5 y 8) + acorde
+  const oirArpegioTonalidad = async (tonicaSemitono, modo = 0) => {
+    if (reproduciendo.value) return
+    reproduciendo.value = true
+
+    let semitonoAnterior = null
+
+    for (const grado of ARPEGIO_TONICA) {
+      if (semitonoAnterior !== null) {
+        silenciarNota(semitonoAnterior)
+      }
+
+      const semitonoActual = calcularSemitono(grado, tonicaSemitono, modo)
+      semitonoAnterior = semitonoActual
+
+      tocarGrado(grado, tonicaSemitono, modo, true)
+      await new Promise(resolve => setTimeout(resolve, 800))
+    }
+
+    if (semitonoAnterior !== null) {
+      silenciarNota(semitonoAnterior)
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 350))
+    await reproducirAcordeTonica(tonicaSemitono, modo)
+
     reproduciendo.value = false
   }
 
   const resetTeclado = () => {
     imagenTeclado.value = '/images/teclado.png'
-    gradoActivoSonando.value = null
+    gradosActivosSonando.value = []
   }
 
   // Obtiene la posición 'top' del teclado para centrarlo según la tonalidad
@@ -137,12 +186,13 @@ export function useAudioGrados() {
   return {
     imagenTeclado,
     reproduciendo,
-    gradoActivoSonando,
+    gradosActivosSonando,
     tocarNota,
     silenciarNota,
     tocarGrado,
     calcularSemitono,
-    oirTonalidadCompleta,
+    oirEscalaTonalidad,
+    oirArpegioTonalidad,
     resetTeclado,
     obtenerTopTeclado
   }

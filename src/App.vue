@@ -6,11 +6,13 @@ import { useAudioGrados } from './composables/useAudioGrados'
 const {
   imagenTeclado,
   reproduciendo,
-  gradoActivoSonando,
+  gradosActivosSonando,
+  tocarNota,
   tocarGrado,
   silenciarNota,
   calcularSemitono,
-  oirTonalidadCompleta,
+  oirEscalaTonalidad,
+  oirArpegioTonalidad,
   resetTeclado,
   obtenerTopTeclado
 } = useAudioGrados()
@@ -60,9 +62,6 @@ const animarTextoReverso = (textoCompleto, velocidad = 30) => {
   const len = textoCompleto.length
   let index = len - 1
 
-  // Reproducir el sonido al arrancar el tecleo
-  reproducirSonidoTeclado()
-
   intervaloTexto = setInterval(() => {
     if (index >= 0) {
       // Va descubriendo el texto desde la posición index hasta el final
@@ -80,14 +79,34 @@ const cambiarInstruccion = (nuevoTexto) => {
   animarTextoReverso(nuevoTexto, 30)
 }
 
-// Banderas de paneles que ya han sido activados (una vez activados, se quedan iluminados)
+// Posición dinámica del encabezado según el paso (reubicación según gradosWeb.js original)
+// En paso 'serie': top: 42px, left: 10px
+// En paso 'meta': top: 70px, left: 5px
+// En paso 'modo': top: 223px, left: 0px
+// En paso 'tonalidad': top: 338px, left: 20px
+// En paso 'listo': top: 460px, left: 500px ("Haz click en Nuevo sonido")
+const estiloEncabezado = computed(() => {
+  switch (pasoConfig.value) {
+    case 'meta':
+      return { top: '70px', left: '5px' }
+    case 'modo':
+      return { top: '223px', left: '0px' }
+    case 'tonalidad':
+      return { top: '338px', left: '20px' }
+    case 'listo':
+      return { top: '460px', left: '500px' }
+    case 'serie':
+    default:
+      return { top: '42px', left: '10px' }
+  }
+})
 const serieActivada = ref(true)
 const metaActivada = ref(false)
 const modoActivado = ref(false)
 const tonalidadActivada = ref(false)
 
 // 1. Tamaño de serie (1..10)
-const serieSeleccionada = ref(1)
+const serieSeleccionada = ref(null) // Al iniciar el juego, ningún tamaño de serie está seleccionado
 const series = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 const idsSerie = ['uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete', 'ocho', 'nueve', 'diez']
 
@@ -130,8 +149,51 @@ const aciertos = ref(0)
 const fallos = ref(0)
 const reloj = ref('0:00:00.00')
 
+// Estado del juego / ejercicio
+const juegoIniciado = ref(false) // Se activa al pulsar 'Nuevo ejercicio / Nuevo sonido'
+const ejercicioActivo = ref(false)
+const listaGradosEjercicio = ref([]) // Grados generados al azar (0..7)
+const gradopPosiciones = ref([]) // Objetos { visible: bool, left: number, top: number } por columna
+
+// Bolsa persistente de grados disponibles (0..7 correspondientes a los grados I al VIII).
+// Se mantiene a lo largo de los ejercicios para garantizar que el usuario recorra la escala
+// completa sin repeticiones antes de volver a recargarse.
+const bolsaGradosPersistente = ref([0, 1, 2, 3, 4, 5, 6, 7])
+
+// Dial de columna que señala el sonido actual (sombraGradop)
+const columnaActivaDial = ref(null) // null cuando no está sonando nada, o índice 0..9 según la columna que suena
+const estiloSombraGradop = computed(() => {
+  if (columnaActivaDial.value === null) {
+    return { display: 'none' }
+  }
+  return {
+    display: 'inline',
+    left: `${490 + columnaActivaDial.value * 39}px`
+  }
+})
+
+// El tablero y paneles de ajuste se consideran bloqueados cuando el juego ha iniciado
+// y el usuario aún no ha alcanzado la meta
+const panelesAjusteBloqueados = computed(() => {
+  if (!juegoIniciado.value) return false
+  if (metaSeleccionada.value && aciertos.value >= metaSeleccionada.value) {
+    return false // Se desbloquean al llegar a la meta
+  }
+  return true
+})
+
+// Textos de los botones según el tamaño de la serie
+const textoNuevoBoton = computed(() => {
+  return serieSeleccionada.value === 1 ? 'Nuevo sonido' : 'Nueva serie'
+})
+
+const textoRepetirBoton = computed(() => {
+  return serieSeleccionada.value === 1 ? 'Repetir sonido' : 'Repetir serie'
+})
+
 // Funciones de selección por paso
 const seleccionarSerie = (num) => {
+  if (!serieActivada.value || panelesAjusteBloqueados.value) return
   serieSeleccionada.value = num
   metaActivada.value = true
 
@@ -139,58 +201,199 @@ const seleccionarSerie = (num) => {
   if (pasoConfig.value !== 'listo') {
     pasoConfig.value = 'meta'
     cambiarInstruccion('Selecciona un número en Meta')
+    reproducirSonidoTeclado()
+  } else {
+    cambiarInstruccion('Haz clic en Nuevo sonido para iniciar')
   }
 }
 
 const seleccionarMeta = (num) => {
+  if (!metaActivada.value || panelesAjusteBloqueados.value) return
   metaSeleccionada.value = num
   modoActivado.value = true
 
   if (pasoConfig.value !== 'listo') {
     pasoConfig.value = 'modo'
     cambiarInstruccion('Selecciona una Clase de escala')
+    reproducirSonidoTeclado()
+  } else {
+    cambiarInstruccion('Haz clic en Nuevo sonido para iniciar')
   }
 }
 
 const seleccionarModo = (modo) => {
+  if (!modoActivado.value || panelesAjusteBloqueados.value) return
   modoSeleccionado.value = modo.id
   tonalidadActivada.value = true
 
   if (pasoConfig.value !== 'listo') {
     pasoConfig.value = 'tonalidad'
     cambiarInstruccion('Selecciona una tonalidad')
+    reproducirSonidoTeclado()
+  } else {
+    cambiarInstruccion('Haz clic en Nuevo sonido para iniciar')
   }
 }
 
 const seleccionarTonalidad = (tonalidad) => {
+  if (!tonalidadActivada.value || reproduciendo.value || panelesAjusteBloqueados.value) return
   tonalidadSeleccionada.value = tonalidad.id
   tonicaSemitonoActual.value = tonalidad.semitono
   pasoConfig.value = 'listo'
   cambiarInstruccion('Haz clic en Nuevo sonido para iniciar')
 
-  // Reproducir inmediatamente el arpegio y acorde cadencial de la tonalidad
+  // Al seleccionar la tonalidad: toca todos los grados de la escala (1 al 8) + acorde
   const modoActual = modoSeleccionado.value !== null ? modoSeleccionado.value : 0
-  oirTonalidadCompleta(tonalidad.semitono, modoActual)
+  oirEscalaTonalidad(tonalidad.semitono, modoActual)
 }
 
 // Botón Oír Tonalidad
 const manejarOirTonalidad = () => {
-  if (tonalidadSeleccionada.value === null) return
+  if (tonalidadSeleccionada.value === null || reproduciendo.value) return
+  // Al pulsar Oír Tonalidad: toca el arpegio (1, 3, 5, 8) + acorde
   const modoActual = modoSeleccionado.value !== null ? modoSeleccionado.value : 0
-  oirTonalidadCompleta(tonicaSemitonoActual.value, modoActual)
+  oirArpegioTonalidad(tonicaSemitonoActual.value, modoActual)
+}
+
+// Función para generar un ejercicio al azar extrayendo de la bolsa persistente
+const generarEjercicio = () => {
+  const tamSerie = serieSeleccionada.value || 1
+  const nuevaLista = []
+
+  for (let i = 0; i < tamSerie; i++) {
+    // Si la bolsa se agota, se recarga con una escala completa de 8 grados (0 a 7)
+    if (bolsaGradosPersistente.value.length === 0) {
+      bolsaGradosPersistente.value = [0, 1, 2, 3, 4, 5, 6, 7]
+    }
+    const idx = Math.floor(Math.random() * bolsaGradosPersistente.value.length)
+    const [gradoSeleccionado] = bolsaGradosPersistente.value.splice(idx, 1)
+    nuevaLista.push(gradoSeleccionado)
+  }
+  return nuevaLista
+}
+
+// Reproducción secuencial de los sonidos del ejercicio y aparición de gradop
+const tocarEjercicio = async (nuevaSecuencia = false) => {
+  if (reproduciendo.value) return
+  if (nuevaSecuencia) {
+    listaGradosEjercicio.value = generarEjercicio()
+  }
+  if (!listaGradosEjercicio.value.length) return
+
+  reproduciendo.value = true
+  ejercicioActivo.value = true
+
+  // Si es un nuevo sonido/serie, reiniciar posiciones
+  if (nuevaSecuencia) {
+    gradopPosiciones.value = Array.from({ length: 10 }, (_, i) => ({
+      visible: false,
+      left: 490 + i * 39,
+      top: 145
+    }))
+  }
+
+  const modoActual = modoSeleccionado.value !== null ? modoSeleccionado.value : 0
+  let semitonoAnterior = null
+
+  // Tocar secuencialmente cada grado del ejercicio
+  for (let i = 0; i < listaGradosEjercicio.value.length; i++) {
+    const grado = listaGradosEjercicio.value[i]
+
+    if (semitonoAnterior !== null) {
+      silenciarNota(semitonoAnterior)
+    }
+
+    const semitono = calcularSemitono(grado, tonicaSemitonoActual.value, modoActual)
+    semitonoAnterior = semitono
+
+    // Posicionar dial de columna (sombraGradop) en la columna actual
+    columnaActivaDial.value = i
+
+    // Hacer visible el signo de interrogación (gradop) sobre su columna
+    if (gradopPosiciones.value[i]) {
+      gradopPosiciones.value[i].visible = true
+    }
+
+    // Tocar el sonido del grado sin mostrar la tecla del piano ni el grado azul
+    tocarNota(semitono, false)
+
+    await new Promise(resolve => setTimeout(resolve, 850))
+  }
+
+  // Ocultar dial sombraGradop al terminar de sonar
+  columnaActivaDial.value = null
+
+  if (semitonoAnterior !== null) {
+    silenciarNota(semitonoAnterior)
+  }
+
+  reproduciendo.value = false
+
+  const mensaje = listaGradosEjercicio.value.length === 1
+    ? 'Ubica el sonido ? frente a un grado'
+    : 'Ubica cada sonido ? frente a un grado'
+  cambiarInstruccion(mensaje)
+}
+
+const manejarNuevoSonido = () => {
+  if (pasoConfig.value !== 'listo' || reproduciendo.value) return
+  juegoIniciado.value = true
+  tocarEjercicio(true)
+}
+
+const manejarRepetirSonido = () => {
+  if (pasoConfig.value !== 'listo' || reproduciendo.value || !listaGradosEjercicio.value.length) return
+  tocarEjercicio(false)
+}
+
+// Función para reiniciar el tablero y el estado de juego
+const reiniciarTablero = () => {
+  if (reproduciendo.value) return
+  columnaActivaDial.value = null
+  juegoIniciado.value = false
+  ejercicioActivo.value = false
+  listaGradosEjercicio.value = []
+  gradopPosiciones.value = Array.from({ length: 10 }, (_, i) => ({
+    visible: false,
+    left: 490 + i * 39,
+    top: 145
+  }))
+  aciertos.value = 0
+  fallos.value = 0
+  resetTeclado()
+
+  // Esconder paneles de Meta, Modo y Tonalidad como al inicio
+  pasoConfig.value = 'serie'
+  serieActivada.value = true
+  metaActivada.value = false
+  modoActivado.value = false
+  tonalidadActivada.value = false
+
+  // Reiniciar selecciones
+  serieSeleccionada.value = null
+  metaSeleccionada.value = null
+  modoSeleccionado.value = null
+  tonalidadSeleccionada.value = null
+
+  // Reiniciar ciclo de instrucciones y sonido de tecleo
+  cambiarInstruccion('Selecciona el tamaño de la serie')
+  reproducirSonidoTeclado()
 }
 
 // Hover sobre los grados 1 al 8 (para escuchar la nota y verla en el teclado)
 const hoverGrado = (indiceGrado) => {
+  if (reproduciendo.value || ejercicioActivo.value) return // Bloqueados durante el ejercicio
   // Grado 0 = grado 1, Grado 7 = grado 8
   const modoActual = modoSeleccionado.value !== null ? modoSeleccionado.value : 0
   tocarGrado(indiceGrado, tonicaSemitonoActual.value, modoActual, true)
 }
 
 const salirGrado = (indiceGrado) => {
+  if (reproduciendo.value || ejercicioActivo.value) return
   const modoActual = modoSeleccionado.value !== null ? modoSeleccionado.value : 0
   const semitono = calcularSemitono(indiceGrado, tonicaSemitonoActual.value, modoActual)
   silenciarNota(semitono)
+  gradosActivosSonando.value = []
 }
 
 // Fecha formateada (equivalente a formatoFecha de datosGW.js)
@@ -218,7 +421,26 @@ const entrarAlJuego = () => {
   fechaRegistro.value = formatearFecha()
   fase.value = 'juego'
   pasoConfig.value = 'serie'
+  serieActivada.value = true
+  metaActivada.value = false
+  modoActivado.value = false
+  tonalidadActivada.value = false
+  serieSeleccionada.value = null
+  metaSeleccionada.value = null
+  modoSeleccionado.value = null
+  tonalidadSeleccionada.value = null
+  juegoIniciado.value = false
+  ejercicioActivo.value = false
+  listaGradosEjercicio.value = []
+  aciertos.value = 0
+  fallos.value = 0
+  gradopPosiciones.value = Array.from({ length: 10 }, (_, i) => ({
+    visible: false,
+    left: 490 + i * 39,
+    top: 145
+  }))
   cambiarInstruccion('Selecciona el tamaño de la serie')
+  reproducirSonidoTeclado()
 }
 </script>
 
@@ -232,8 +454,9 @@ const entrarAlJuego = () => {
           :id="'grado' + g" 
           :src="'/images/grado' + g + '.png'"
           :class="{
-            'grado-activo': gradoActivoSonando === (g - 1),
-            'grados-visibles': tonalidadSeleccionada !== null
+            'grado-activo': gradosActivosSonando.includes(g - 1),
+            'grados-visibles': tonalidadSeleccionada !== null,
+            'bloqueado': reproduciendo || ejercicioActivo
           }"
           @mouseenter="hoverGrado(g - 1)"
           @mouseleave="salirGrado(g - 1)"
@@ -250,10 +473,7 @@ const entrarAlJuego = () => {
 
         <div id="reloj">{{ reloj }}</div>
 
-        <div id="titulo" :class="{ activo: tonalidadActivada }">Tonalidad</div>
-        <div id="marcoTonalidades" :class="{ activo: tonalidadActivada }"></div>
-
-        <div id="encabezado">{{ encabezadoTexto }}</div>
+        <div id="encabezado" :style="estiloEncabezado">{{ encabezadoTexto }}</div>
         <div id="nomUser">Nombre: {{ nombreUsuario }}</div>
         <div id="fecha">{{ fechaRegistro }}</div>
 
@@ -267,59 +487,96 @@ const entrarAlJuego = () => {
         <div class="des" id="des7"></div>
 
         <!-- Tonalidades -->
-        <div 
-          v-for="ton in tonalidades" 
-          :key="ton.id" 
-          class="tonal" 
-          :id="ton.id"
-          :class="{ 
-            seleccionado: tonalidadSeleccionada === ton.id,
-            disponible: tonalidadActivada
-          }"
-          @click="seleccionarTonalidad(ton)"
-        >{{ modoSeleccionado === 0 || modoSeleccionado === null ? ton.nombreMayor : ton.nombreMenor }}</div>
+        <template v-if="tonalidadActivada">
+          <div id="titulo" class="activo panel-fade-in" :class="{ 'panel-bloqueado': panelesAjusteBloqueados }">Tonalidad</div>
+          <div id="marcoTonalidades" class="activo panel-fade-in" :class="{ 'panel-bloqueado': panelesAjusteBloqueados }"></div>
+          <div 
+            v-for="ton in tonalidades" 
+            :key="ton.id" 
+            class="tonal panel-fade-in" 
+            :id="ton.id"
+            :class="{ 
+              seleccionado: tonalidadSeleccionada === ton.id,
+              bloqueado: reproduciendo || panelesAjusteBloqueados
+            }"
+            @click="seleccionarTonalidad(ton)"
+          >{{ modoSeleccionado === 0 || modoSeleccionado === null ? ton.nombreMayor : ton.nombreMenor }}</div>
+        </template>
 
         <!-- Meta -->
-        <div id="meta" :class="{ activo: metaActivada }">Meta</div>
-        <div id="marcoMeta" :class="{ activo: metaActivada }"></div>
-        <div 
-          v-for="(m, idx) in metas" 
-          :key="m" 
-          class="meta" 
-          :id="'meta' + (idx + 1)"
-          :class="{ 
-            seleccionado: metaSeleccionada === m,
-            disponible: metaActivada
-          }"
-          @click="seleccionarMeta(m)"
-        >{{ m }}</div>
+        <template v-if="metaActivada">
+          <div id="meta" class="activo panel-fade-in" :class="{ 'panel-bloqueado': panelesAjusteBloqueados }">Meta</div>
+          <div id="marcoMeta" class="activo panel-fade-in" :class="{ 'panel-bloqueado': panelesAjusteBloqueados }"></div>
+          <div 
+            v-for="(m, idx) in metas" 
+            :key="m" 
+            class="meta panel-fade-in" 
+            :id="'meta' + (idx + 1)"
+            :class="{ 
+              seleccionado: metaSeleccionada === m,
+              bloqueado: panelesAjusteBloqueados
+            }"
+            @click="seleccionarMeta(m)"
+          >{{ m }}</div>
+        </template>
         
         <!-- Clase de escala / Modos -->
-        <div id="tituloModos" :class="{ activo: modoActivado }">Clase de escala</div>
-        <div id="marcoModos" :class="{ activo: modoActivado }"></div>
+        <template v-if="modoActivado">
+          <div id="tituloModos" class="activo panel-fade-in" :class="{ 'panel-bloqueado': panelesAjusteBloqueados }">Clase de escala</div>
+          <div id="marcoModos" class="activo panel-fade-in" :class="{ 'panel-bloqueado': panelesAjusteBloqueados }"></div>
+          <div 
+            v-for="m in modos" 
+            :key="m.id" 
+            class="modo panel-fade-in" 
+            :id="'modo' + (m.id + 1)"
+            :class="{ 
+              seleccionado: modoSeleccionado === m.id,
+              bloqueado: panelesAjusteBloqueados
+            }"
+            @click="seleccionarModo(m)"
+          >{{ m.nombre }}</div>
+        </template>
 
         <div 
-          v-for="m in modos" 
-          :key="m.id" 
-          class="modo" 
-          :id="'modo' + (m.id + 1)"
-          :class="{ 
-            seleccionado: modoSeleccionado === m.id,
-            disponible: modoActivado
-          }"
-          @click="seleccionarModo(m)"
-        >{{ m.nombre }}</div>
+          v-if="pasoConfig === 'listo'" 
+          id="nuevosonido" 
+          class="activo panel-fade-in"
+          :class="{ bloqueado: reproduciendo }"
+          @click="manejarNuevoSonido"
+        >{{ textoNuevoBoton }}</div>
 
-        <div id="nuevosonido" :class="{ activo: pasoConfig === 'listo' }"></div>
-        <div id="repetirsonido" :class="{ activo: pasoConfig === 'listo' }"></div>
+        <div 
+          v-if="pasoConfig === 'listo'" 
+          id="repetirsonido" 
+          class="activo panel-fade-in"
+          :class="{ bloqueado: reproduciendo || !listaGradosEjercicio.length }"
+          @click="manejarRepetirSonido"
+        >{{ textoRepetirBoton }}</div>
        
         <div 
+          v-if="tonalidadSeleccionada !== null"
           id="oirtonalidad" 
-          :class="{ activo: tonalidadSeleccionada !== null }"
+          class="activo panel-fade-in"
+          :class="{ bloqueado: reproduciendo }"
           @click="manejarOirTonalidad"
         >Oir tonalidad</div>
-        <div id="marcador1">{{ aciertos }}</div>
-        <div id="marcador2">{{ fallos }}</div>
+
+        <div 
+          v-if="juegoIniciado"
+          id="reiniciar" 
+          class="activo panel-fade-in"
+          :class="{ bloqueado: reproduciendo }"
+          @click="reiniciarTablero"
+        >Reiniciar</div>
+
+        <div 
+          id="marcador1" 
+          :class="{ 'activo-aciertos': metaSeleccionada !== null || juegoIniciado }"
+        >{{ aciertos }}</div>
+        <div 
+          id="marcador2"
+          :class="{ 'activo-fallos': metaSeleccionada !== null || juegoIniciado }"
+        >{{ fallos }}</div>
 
         <!-- Marcas de columna activas según la serie seleccionada -->
         <img 
@@ -332,7 +589,10 @@ const entrarAlJuego = () => {
         >
 
         <!-- Tamaño de Serie -->
-        <div id="tituloSerie" :class="{ activo: serieActivada }">Tamaño de la serie:</div>
+        <div 
+          id="tituloSerie" 
+          :class="{ activo: serieActivada, 'panel-bloqueado': panelesAjusteBloqueados }"
+        >Tamaño de la serie:</div>
         <div 
           v-for="(num, idx) in series" 
           :key="num" 
@@ -340,6 +600,7 @@ const entrarAlJuego = () => {
           :id="idsSerie[idx]"
           :class="{ 
             seleccionado: num <= serieSeleccionada,
+            bloqueado: panelesAjusteBloqueados,
             disponible: true
           }"
           @click="seleccionarSerie(num)"
@@ -355,7 +616,7 @@ const entrarAlJuego = () => {
         <img class="sgp" id="sombraGrado8" src="/images/dialAzul.png">
         <img class="sgp" id="sombraGrado9" src="/images/dialAzul.png">
         <img class="sgp" id="sombraGrado10" src="/images/dialAzul.png">
-        <img id="sombraGradop" src="/images/sombraGradop.png">
+        <img id="sombraGradop" src="/images/sombraGradop.png" :style="estiloSombraGradop">
 
         <!-- Grados / Círculos punteados por columna (g1..g10) -->
         <template v-for="col in 10" :key="'col-' + col">
@@ -367,16 +628,20 @@ const entrarAlJuego = () => {
           ></div>
         </template>
 
-        <img class="gp" id="gradop1" src="/images/gradop.png" draggable="true">
-        <img class="gp" id="gradop2" src="/images/gradop.png" draggable="true">
-        <img class="gp" id="gradop3" src="/images/gradop.png" draggable="true">
-        <img class="gp" id="gradop4" src="/images/gradop.png" draggable="true">
-        <img class="gp" id="gradop5" src="/images/gradop.png" draggable="true">
-        <img class="gp" id="gradop6" src="/images/gradop.png" draggable="true">
-        <img class="gp" id="gradop7" src="/images/gradop.png" draggable="true">
-        <img class="gp" id="gradop8" src="/images/gradop.png" draggable="true">
-        <img class="gp" id="gradop9" src="/images/gradop.png" draggable="true">
-        <img class="gp" id="gradop10" src="/images/gradop.png" draggable="true">
+        <!-- Grados con signo de interrogación (gradop) correspondientes a cada columna -->
+        <img 
+          v-for="col in 10"
+          :key="'gradop-' + col"
+          class="gp" 
+          :id="'gradop' + col" 
+          src="/images/gradop.png" 
+          draggable="true"
+          :style="{
+            left: (gradopPosiciones[col - 1]?.left || (490 + (col - 1) * 39)) + 'px',
+            top: (gradopPosiciones[col - 1]?.top || 145) + 'px',
+            display: gradopPosiciones[col - 1]?.visible ? 'inline' : 'none'
+          }"
+        >
 
         <!-- Capa de Portada y Registro -->
         <template v-if="fase !== 'juego'">
@@ -484,11 +749,22 @@ const entrarAlJuego = () => {
 
 /* Reactividad de los selectores */
 .numserie, .meta, .modo, .tonal {
-  cursor: pointer;
   user-select: none;
   font-weight: normal !important; /* Evitar que se desborden */
   transition: all 0.15s ease;
   text-align: center;
+  cursor: pointer;
+}
+
+.panel-fade-in {
+  animation: fadeIn 0.3s ease-in forwards;
+}
+
+/* Bloqueo del panel de tonalidad mientras suena la tonalidad */
+.tonal.bloqueado {
+  pointer-events: none !important;
+  cursor: default !important;
+  opacity: 0.65;
 }
 
 /* Alineación exacta de los números de serie con los círculos (ancho 29px centrado) */
@@ -536,6 +812,16 @@ const entrarAlJuego = () => {
 }
 
 /* Resaltado de secciones activas (permanecen encendidas una vez activadas) */
+#tituloSerie, #meta, #tituloModos, #titulo {
+  color: rgb(60, 60, 60);
+  transition: color 0.2s ease;
+}
+
+#marcoMeta, #marcoModos, #marcoTonalidades {
+  border: 1px solid rgb(60, 60, 60);
+  transition: border-color 0.2s ease;
+}
+
 #tituloSerie.activo, #meta.activo, #tituloModos.activo, #titulo.activo {
   color: rgb(210, 100, 20) !important;
 }
@@ -549,14 +835,91 @@ const entrarAlJuego = () => {
   color: rgb(0, 100, 255) !important;
 }
 
-.meta:hover, .modo:hover, .tonal:hover, .numserie:hover {
+.meta:hover:not(.bloqueado), .modo:hover:not(.bloqueado), .tonal:hover:not(.bloqueado), .numserie:hover:not(.bloqueado) {
   color: rgb(0, 100, 255) !important;
 }
 
+/* Bloqueo de paneles durante el juego */
+.numserie.bloqueado, .meta.bloqueado, .modo.bloqueado {
+  pointer-events: none !important;
+  cursor: default !important;
+  opacity: 0.65;
+}
+
+.panel-bloqueado {
+  opacity: 0.65;
+}
+
 /* Botones de acción */
-#nuevosonido.activo, #repetirsonido.activo, #oirtonalidad.activo {
+#nuevosonido, #repetirsonido, #oirtonalidad, #reiniciar {
+  user-select: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.2;
+  border: 1px solid currentColor;
+  transition: all 0.2s ease;
   cursor: pointer;
-  opacity: 1 !important;
+}
+
+#reiniciar {
+  position: absolute;
+  left: 740px;
+  top: 520px;
+  width: 72px;
+  height: 43px;
+  color: rgb(255, 120, 60);
+  border-radius: 5px;
+}
+
+#nuevosonido:hover:not(.bloqueado) {
+  background-color: rgba(0, 220, 255, 0.2);
+}
+
+#repetirsonido:hover:not(.bloqueado) {
+  background-color: rgba(255, 208, 0, 0.2);
+}
+
+#oirtonalidad:hover:not(.bloqueado) {
+  background-color: rgba(0, 130, 255, 0.2);
+}
+
+#reiniciar:hover:not(.bloqueado) {
+  background-color: rgba(255, 120, 60, 0.2);
+}
+
+#nuevosonido.bloqueado, 
+#repetirsonido.bloqueado, 
+#oirtonalidad.bloqueado,
+#reiniciar.bloqueado {
+  pointer-events: none !important;
+  opacity: 0.4 !important;
+  cursor: default !important;
+}
+
+/* Marcadores */
+#marcador1 {
+  color: rgb(60, 60, 60);
+  font-weight: normal;
+  user-select: none;
+  transition: color 0.3s ease;
+}
+
+#marcador2 {
+  color: rgb(60, 60, 60);
+  font-weight: normal;
+  user-select: none;
+  transition: color 0.3s ease;
+}
+
+#marcador1.activo-aciertos {
+  color: rgb(0, 220, 0) !important;
+}
+
+#marcador2.activo-fallos {
+  color: rgb(180, 180, 180) !important;
 }
 
 #teclado {
@@ -579,6 +942,10 @@ const entrarAlJuego = () => {
   left: 410px !important;
   opacity: 1 !important;
   filter: drop-shadow(0 0 6px rgb(0, 180, 255)) brightness(1.2);
+}
+
+.grado.bloqueado {
+  pointer-events: none !important;
 }
 
 .grado:hover {
