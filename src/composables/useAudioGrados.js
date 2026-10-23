@@ -89,7 +89,7 @@ export function useAudioGrados() {
   }
 
   // Reproduce el acorde simultáneo de la tónica con el gráfico del teclado
-  const reproducirAcordeTonica = async (tonicaSemitono, modo = 0) => {
+  const reproducirAcordeTonica = async (tonicaSemitono, modo = 0, duracionMs = 1100) => {
     let numTonal = tonicaSemitono + 1
     if (modo > 0) {
       numTonal += 12
@@ -100,16 +100,39 @@ export function useAudioGrados() {
     gradosActivosSonando.value = [...ARPEGIO_TONICA]
 
     // Tocar el acorde simultáneo (las 4 notas de la tónica al mismo tiempo)
-    ARPEGIO_TONICA.forEach(grado => {
+    const audiosAcorde = ARPEGIO_TONICA.map(grado => {
       const semitono = calcularSemitono(grado, tonicaSemitono, modo)
       const archivo = listaArchivosSonido[semitono]
       const audio = new Audio('/audio/' + archivo)
       audio.play().catch(() => {})
+      return audio
     })
 
-    await new Promise(resolve => setTimeout(resolve, 1100))
+    await new Promise(resolve => setTimeout(resolve, duracionMs))
+
+    // Si la duración es corta, cortar el sonido antes del segundo golpe
+    if (duracionMs < 800) {
+      audiosAcorde.forEach(a => {
+        try {
+          a.pause()
+          a.currentTime = 0
+        } catch (e) {}
+      })
+    }
+
     imagenTeclado.value = '/images/teclado.png'
     gradosActivosSonando.value = []
+  }
+
+  // Fanfarria "ta-daa" triunfal al alcanzar la meta:
+  // Dos acordes de tónica seguidos, el primero corto (ta) y el segundo resonante y prolongado (daaa)
+  const reproducirTaDaa = async (tonicaSemitono, modo = 0) => {
+    // 1. "Ta" corto
+    await reproducirAcordeTonica(tonicaSemitono, modo, 120)
+    // Breve silencio entre ambos
+    await new Promise(resolve => setTimeout(resolve, 80))
+    // 2. "Daa" resonante
+    await reproducirAcordeTonica(tonicaSemitono, modo, 1200)
   }
 
   // 1. Al seleccionar una tonalidad: reproduce todos los grados de la escala (1 al 8) + acorde
@@ -193,6 +216,8 @@ export function useAudioGrados() {
     calcularSemitono,
     oirEscalaTonalidad,
     oirArpegioTonalidad,
+    reproducirAcordeTonica,
+    reproducirTaDaa,
     resetTeclado,
     obtenerTopTeclado
   }

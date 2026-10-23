@@ -13,6 +13,7 @@ const {
   calcularSemitono,
   oirEscalaTonalidad,
   oirArpegioTonalidad,
+  reproducirTaDaa,
   resetTeclado,
   obtenerTopTeclado
 } = useAudioGrados()
@@ -93,6 +94,8 @@ const estiloEncabezado = computed(() => {
       return { top: '223px', left: '0px' }
     case 'tonalidad':
       return { top: '338px', left: '20px' }
+    case 'reconfigurar':
+      return { top: '478px', left: '296px' }
     case 'listo':
       return { top: '460px', left: '500px' }
     case 'serie':
@@ -152,8 +155,12 @@ const reloj = ref('0:00:00.00')
 // Estado del juego / ejercicio
 const juegoIniciado = ref(false) // Se activa al pulsar 'Nuevo ejercicio / Nuevo sonido'
 const ejercicioActivo = ref(false)
+const evaluando = ref(false)
 const listaGradosEjercicio = ref([]) // Grados generados al azar (0..7)
-const gradopPosiciones = ref([]) // Objetos { visible: bool, left: number, top: number } por columna
+const gradopPosiciones = ref([]) // Objetos { visible: bool, left: number, top: number, gradoAsignado: null, imagen: string, acertado: bool } por columna
+const circulosIncorrectos = ref(new Set()) // Claves 'c-col-g-grado' que han sido visitadas erróneamente
+const dialAzulActivo = ref(null) // { columna: number, top: number } | null para sombraGrado{col}
+const columnaArrastrando = ref(null) // Índice (0..9) de la columna del gradop que se está arrastrando
 
 // Bolsa persistente de grados disponibles (0..7 correspondientes a los grados I al VIII).
 // Se mantiene a lo largo de los ejercicios para garantizar que el usuario recorra la escala
@@ -172,7 +179,7 @@ const estiloSombraGradop = computed(() => {
   }
 })
 
-// El tablero y paneles de ajuste se consideran bloqueados cuando el juego ha iniciado
+// El tablero y paneles de ajuste se consideran bloqueados mientras una partida está en curso
 // y el usuario aún no ha alcanzado la meta
 const panelesAjusteBloqueados = computed(() => {
   if (!juegoIniciado.value) return false
@@ -180,6 +187,12 @@ const panelesAjusteBloqueados = computed(() => {
     return false // Se desbloquean al llegar a la meta
   }
   return true
+})
+
+// Botones de trabajo con los ejercicios ('Nuevo sonido', 'Repetir sonido', 'Oir tonalidad', 'Reiniciar')
+// Solo están activos cuando el juego está configurado y listo, y NO mientras se espera reconfiguración/reinicio tras meta
+const botonesTrabajoActivos = computed(() => {
+  return pasoConfig.value === 'listo' && !reproduciendo.value
 })
 
 // Textos de los botones según el tamaño de la serie
@@ -197,11 +210,14 @@ const seleccionarSerie = (num) => {
   serieSeleccionada.value = num
   metaActivada.value = true
 
-  // Si aún no se ha configurado la tonalidad, avanzamos en la guía inicial
-  if (pasoConfig.value !== 'listo') {
+  // Si aún no se ha configurado la tonalidad en la primera corrida
+  if (pasoConfig.value === 'serie') {
     pasoConfig.value = 'meta'
     cambiarInstruccion('Selecciona un número en Meta')
     reproducirSonidoTeclado()
+  } else if (pasoConfig.value === 'reconfigurar') {
+    // Si ya terminó un juego y está reconfigurando, debe seleccionar tonalidad para activar el nuevo ejercicio
+    cambiarInstruccion('Selecciona una tonalidad para comenzar el nuevo ejercicio')
   } else {
     cambiarInstruccion('Haz clic en Nuevo sonido para iniciar')
   }
@@ -212,10 +228,12 @@ const seleccionarMeta = (num) => {
   metaSeleccionada.value = num
   modoActivado.value = true
 
-  if (pasoConfig.value !== 'listo') {
+  if (pasoConfig.value === 'meta') {
     pasoConfig.value = 'modo'
     cambiarInstruccion('Selecciona una Clase de escala')
     reproducirSonidoTeclado()
+  } else if (pasoConfig.value === 'reconfigurar') {
+    cambiarInstruccion('Selecciona una tonalidad para comenzar el nuevo ejercicio')
   } else {
     cambiarInstruccion('Haz clic en Nuevo sonido para iniciar')
   }
@@ -226,10 +244,12 @@ const seleccionarModo = (modo) => {
   modoSeleccionado.value = modo.id
   tonalidadActivada.value = true
 
-  if (pasoConfig.value !== 'listo') {
+  if (pasoConfig.value === 'modo') {
     pasoConfig.value = 'tonalidad'
     cambiarInstruccion('Selecciona una tonalidad')
     reproducirSonidoTeclado()
+  } else if (pasoConfig.value === 'reconfigurar') {
+    cambiarInstruccion('Selecciona una tonalidad para comenzar el nuevo ejercicio')
   } else {
     cambiarInstruccion('Haz clic en Nuevo sonido para iniciar')
   }
@@ -285,10 +305,15 @@ const tocarEjercicio = async (nuevaSecuencia = false) => {
 
   // Si es un nuevo sonido/serie, reiniciar posiciones
   if (nuevaSecuencia) {
+    circulosIncorrectos.value.clear()
+    dialAzulActivo.value = null
     gradopPosiciones.value = Array.from({ length: 10 }, (_, i) => ({
       visible: false,
       left: 490 + i * 39,
-      top: 145
+      top: 145,
+      gradoAsignado: null,
+      imagen: '/images/gradop.png',
+      acertado: false
     }))
   }
 
@@ -380,6 +405,45 @@ const reiniciarTablero = () => {
   reproducirSonidoTeclado()
 }
 
+// Finalización de sesión al alcanzar la meta:
+// Mantiene los paneles abiertos y con sus selecciones anteriores para que el usuario
+// no sienta que se le quitaron los elementos de trabajo. Desactiva los botones de ejercicio
+// y le permite reconfigurar libremente (Serie, Meta, Clase de escala), requiriendo
+// seleccionar una tonalidad para activar el nuevo ejercicio.
+const finalizarSesionAlcanzada = () => {
+  columnaActivaDial.value = null
+  dialAzulActivo.value = null
+  juegoIniciado.value = false
+  ejercicioActivo.value = false
+  listaGradosEjercicio.value = []
+  circulosIncorrectos.value.clear()
+  
+  // Limpiar los signos de pregunta del tablero
+  gradopPosiciones.value = Array.from({ length: 10 }, (_, i) => ({
+    visible: false,
+    left: 490 + i * 39,
+    top: 145,
+    gradoAsignado: null,
+    imagen: '/images/gradop.png',
+    acertado: false
+  }))
+
+  aciertos.value = 0
+  fallos.value = 0
+  resetTeclado()
+
+  // Se mantienen visibles los paneles ya configurados
+  serieActivada.value = true
+  metaActivada.value = true
+  modoActivado.value = true
+  tonalidadActivada.value = true
+
+  // Estado de espera para reconfiguración
+  
+  cambiarInstruccion('Selecciona una tonalidad para comenzar el nuevo ejercicio')
+  reproducirSonidoTeclado()
+}
+
 // Hover sobre los grados 1 al 8 (para escuchar la nota y verla en el teclado)
 const hoverGrado = (indiceGrado) => {
   if (reproduciendo.value || ejercicioActivo.value) return // Bloqueados durante el ejercicio
@@ -394,6 +458,246 @@ const salirGrado = (indiceGrado) => {
   const semitono = calcularSemitono(indiceGrado, tonicaSemitonoActual.value, modoActual)
   silenciarNota(semitono)
   gradosActivosSonando.value = []
+}
+
+// ----------------------------------------------------------------------
+// Drag and drop & Selección de respuesta
+// ----------------------------------------------------------------------
+// Coordenada top para cada grado (índice 0 = grado 1 hasta índice 7 = grado 8)
+const TOPS_GRADOS = [414, 382, 350, 318, 286, 254, 222, 190]
+const NOMBRES_ROMANOS = ["I", "II", "III", "IV", "V", "VI", "VII", "I agudo"]
+
+const iniciarArrastre = (e, colIndex) => {
+  if (reproduciendo.value || evaluando.value || !ejercicioActivo.value) return
+  // Si ya fue acertado, no se vuelve a mover
+  if (gradopPosiciones.value[colIndex]?.acertado) return
+  columnaArrastrando.value = colIndex
+  e.dataTransfer.setData('text/plain', String(colIndex))
+  e.dataTransfer.effectAllowed = 'move'
+}
+
+const permitirSoltar = (e, colIndex) => {
+  if (reproduciendo.value || evaluando.value || !ejercicioActivo.value) return
+  // Solo se puede soltar en círculos de la misma columna que se está arrastrando
+  if (columnaArrastrando.value === colIndex) {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'move'
+  }
+}
+
+const soltarEnGrado = (colIndex, gradoIndex) => {
+  if (reproduciendo.value || evaluando.value || !ejercicioActivo.value) return
+  if (columnaArrastrando.value !== colIndex) return
+  columnaArrastrando.value = null
+  asignarRespuesta(colIndex, gradoIndex)
+}
+
+// También permitir hacer click directamente sobre el círculo punteado
+const clickCirculoGrado = (colIndex, gradoIndex) => {
+  if (reproduciendo.value || evaluando.value || !ejercicioActivo.value) return
+  if (gradopPosiciones.value[colIndex]?.acertado) return
+
+  // Limpiar referencias de hover activo al confirmar
+  hoverColumna.value = null
+  hoverGradoIndex.value = null
+  gradosActivosSonando.value = []
+  resetTeclado()
+
+  asignarRespuesta(colIndex, gradoIndex)
+}
+
+// Hover sobre los círculos punteados de respuesta:
+// "Atrae" el 'gradop' a la posición del círculo, ilumina el dial azul (sombraGrado)
+// que conecta la columna con el grado, enciende el grado azul y resalta la tecla en el piano.
+const hoverColumna = ref(null)
+const hoverGradoIndex = ref(null)
+
+const hoverCirculoRespuesta = (colIndex, gradoIndex) => {
+  if (reproduciendo.value || evaluando.value || !ejercicioActivo.value) return
+  // Solo interactuar con columnas que pertenecen a la serie seleccionada
+  if (serieSeleccionada.value === null || colIndex >= serieSeleccionada.value) return
+  const item = gradopPosiciones.value[colIndex]
+  if (!item || item.acertado) return
+  // Si ya tiene una respuesta asignada fija (y no ha sido devuelta), no sobreescribir
+  if (item.gradoAsignado !== null) return
+
+  hoverColumna.value = colIndex
+  hoverGradoIndex.value = gradoIndex
+
+  // Mover temporalmente el gradop al círculo punteado
+  item.top = TOPS_GRADOS[gradoIndex]
+
+  // Activar dial azul horizontal
+  dialAzulActivo.value = {
+    columna: colIndex + 1,
+    top: TOPS_GRADOS[gradoIndex] + 1
+  }
+
+  // Iluminar el círculo azul del grado (0..7)
+  gradosActivosSonando.value = [gradoIndex]
+
+  // Iluminar la tecla en el piano
+  const modoActual = modoSeleccionado.value !== null ? modoSeleccionado.value : 0
+  const semitono = calcularSemitono(gradoIndex, tonicaSemitonoActual.value, modoActual)
+  imagenTeclado.value = `/images/tecla${semitono + 1}.png`
+}
+
+const salirCirculoRespuesta = (colIndex, gradoIndex) => {
+  if (reproduciendo.value || evaluando.value || !ejercicioActivo.value) return
+  if (serieSeleccionada.value === null || colIndex >= serieSeleccionada.value) return
+  const item = gradopPosiciones.value[colIndex]
+  if (!item || item.acertado) return
+  // Si el usuario ya consolidó la respuesta con un click, no regresarlo a 145
+  if (item.gradoAsignado !== null) return
+
+  // Si estábamos haciendo hover en este círculo, restablecer a la posición de reposo
+  if (hoverColumna.value === colIndex && hoverGradoIndex.value === gradoIndex) {
+    hoverColumna.value = null
+    hoverGradoIndex.value = null
+    item.top = 145
+    dialAzulActivo.value = null
+    gradosActivosSonando.value = []
+    resetTeclado()
+  }
+}
+
+// Asignar el grado a la columna y verificar si se han ubicado todos para evaluar
+const asignarRespuesta = (colIndex, gradoIndex) => {
+  const item = gradopPosiciones.value[colIndex]
+  if (!item || item.acertado) return
+
+  // Posicionar el gradop sobre el círculo punteado
+  item.gradoAsignado = gradoIndex
+  item.left = 490 + colIndex * 39
+  item.top = TOPS_GRADOS[gradoIndex]
+
+  // Comprobar si todas las columnas de la serie ya tienen un grado asignado
+  const tam = listaGradosEjercicio.value.length
+  let todasUbicadas = true
+  for (let i = 0; i < tam; i++) {
+    if (gradopPosiciones.value[i].gradoAsignado === null) {
+      todasUbicadas = false
+      break
+    }
+  }
+
+  if (todasUbicadas) {
+    evaluarRespuestas()
+  }
+}
+
+// Evaluación del ejercicio
+const evaluarRespuestas = async () => {
+  evaluando.value = true
+  const tam = listaGradosEjercicio.value.length
+  const modoActual = modoSeleccionado.value !== null ? modoSeleccionado.value : 0
+
+  let correctos = 0
+  for (let i = 0; i < tam; i++) {
+    if (gradopPosiciones.value[i].gradoAsignado === listaGradosEjercicio.value[i]) {
+      correctos++
+    }
+  }
+
+  // 1. Caso: Todas las respuestas son correctas
+  if (correctos === tam) {
+    aciertos.value++
+
+    // Reemplazar los signos ? por el círculo azul con número correspondiente (/images/grado{n}.png)
+    for (let i = 0; i < tam; i++) {
+      const gradoCorrecto = listaGradosEjercicio.value[i]
+      gradopPosiciones.value[i].imagen = `/images/grado${gradoCorrecto + 1}.png`
+      gradopPosiciones.value[i].acertado = true
+    }
+
+    // Texto de confirmación con numeración romana
+    let mensaje = tam === 1 ? 'Muy bien, ha sonado el grado ' : 'Muy bien, han sonado los grados '
+    let sep = ''
+    for (let i = 0; i < tam; i++) {
+      mensaje += sep + NOMBRES_ROMANOS[listaGradosEjercicio.value[i]]
+      if (i === tam - 2) {
+        sep = ' y '
+      } else {
+        sep = ', '
+      }
+    }
+    mensaje += '.'
+    cambiarInstruccion(mensaje)
+
+    // Reproducción de confirmación: hacer sonar de nuevo cada sonido,
+    // destacando visualmente la fila (dialAzul / sombraGrado{col}), el grado azul y la tecla del piano
+    for (let i = 0; i < tam; i++) {
+      const grado = listaGradosEjercicio.value[i]
+      const semitono = calcularSemitono(grado, tonicaSemitonoActual.value, modoActual)
+
+      // Conectar con dial azul horizontal a la fila del grado
+      dialAzulActivo.value = {
+        columna: i + 1,
+        top: TOPS_GRADOS[grado] + 1
+      }
+
+      // Destacar visualmente el grado azul y la tecla del teclado
+      gradosActivosSonando.value = [grado]
+      tocarNota(semitono, true)
+
+      await new Promise(resolve => setTimeout(resolve, 950))
+      silenciarNota(semitono)
+    }
+
+    dialAzulActivo.value = null
+    gradosActivosSonando.value = []
+    resetTeclado()
+
+    // Si alcanzó la meta propuesta
+    if (metaSeleccionada.value && aciertos.value >= metaSeleccionada.value) {
+      pasoConfig.value = 'reconfigurar' //desactiva botones de Nuevo sonido/serie, Repetir y Oir Tonalidad inmediatamente alcanza la meta propuesta.
+      await new Promise(resolve => setTimeout(resolve, 600))
+      cambiarInstruccion('¡Muy bien! Has alcanzado la meta propuesta.')
+      
+      // Toque triunfal 'ta-daa': dos acordes simultáneos, el 1ro corto y el 2do prolongado
+      await reproducirTaDaa(tonicaSemitonoActual.value, modoActual)
+
+      // Pausa de celebración
+      await new Promise(resolve => setTimeout(resolve, 1500))
+
+      // Finalizar sesión y dejar paneles listos para reconfigurar a voluntad del usuario
+      finalizarSesionAlcanzada()
+    } else {
+      await new Promise(resolve => setTimeout(resolve, 600))
+      const avisoNuevo = tam === 1 ? 'Haz clic en Nuevo sonido' : 'Selecciona una Nueva serie'
+      cambiarInstruccion(avisoNuevo)
+      ejercicioActivo.value = false
+    }
+  } else {
+    // 2. Caso: Hay respuestas incorrectas
+    fallos.value++
+
+    for (let i = 0; i < tam; i++) {
+      const gAsignado = gradopPosiciones.value[i].gradoAsignado
+      const gCorrecto = listaGradosEjercicio.value[i]
+
+      if (gAsignado !== gCorrecto) {
+        // Marcar el círculo punteado como visitado e incorrecto (fondo gris)
+        circulosIncorrectos.value.add(`c-${i + 1}-g-${gAsignado + 1}`)
+
+        // Devolver el círculo de pregunta (?) a su posición inicial
+        gradopPosiciones.value[i].left = 490 + i * 39
+        gradopPosiciones.value[i].top = 145
+        gradopPosiciones.value[i].gradoAsignado = null
+      } else {
+        // El que estuvo bien se mantiene acertado y con su círculo azul
+        gradopPosiciones.value[i].imagen = `/images/grado${gCorrecto + 1}.png`
+        gradopPosiciones.value[i].acertado = true
+      }
+    }
+
+    const mensajeError = tam > 1
+      ? 'Reubica los grados devueltos.'
+      : 'Intenta con otro grado.'
+    cambiarInstruccion(mensajeError)
+  }
+
+  evaluando.value = false
 }
 
 // Fecha formateada (equivalente a formatoFecha de datosGW.js)
@@ -456,7 +760,7 @@ const entrarAlJuego = () => {
           :class="{
             'grado-activo': gradosActivosSonando.includes(g - 1),
             'grados-visibles': tonalidadSeleccionada !== null,
-            'bloqueado': reproduciendo || ejercicioActivo
+            'bloqueado': reproduciendo || ejercicioActivo || pasoConfig === 'reconfigurar'
           }"
           @mouseenter="hoverGrado(g - 1)"
           @mouseleave="salirGrado(g - 1)"
@@ -538,18 +842,18 @@ const entrarAlJuego = () => {
         </template>
 
         <div 
-          v-if="pasoConfig === 'listo'" 
+          v-if="tonalidadActivada" 
           id="nuevosonido" 
           class="activo panel-fade-in"
-          :class="{ bloqueado: reproduciendo }"
+          :class="{ bloqueado: !botonesTrabajoActivos }"
           @click="manejarNuevoSonido"
         >{{ textoNuevoBoton }}</div>
 
         <div 
-          v-if="pasoConfig === 'listo'" 
+          v-if="tonalidadActivada" 
           id="repetirsonido" 
           class="activo panel-fade-in"
-          :class="{ bloqueado: reproduciendo || !listaGradosEjercicio.length }"
+          :class="{ bloqueado: !botonesTrabajoActivos || !listaGradosEjercicio.length }"
           @click="manejarRepetirSonido"
         >{{ textoRepetirBoton }}</div>
        
@@ -557,7 +861,7 @@ const entrarAlJuego = () => {
           v-if="tonalidadSeleccionada !== null"
           id="oirtonalidad" 
           class="activo panel-fade-in"
-          :class="{ bloqueado: reproduciendo }"
+          :class="{ bloqueado: !botonesTrabajoActivos }"
           @click="manejarOirTonalidad"
         >Oir tonalidad</div>
 
@@ -606,16 +910,17 @@ const entrarAlJuego = () => {
           @click="seleccionarSerie(num)"
         >{{ num }}</div>
 
-        <img class="sgp" id="sombraGrado1" src="/images/dialAzul.png">
-        <img class="sgp" id="sombraGrado2" src="/images/dialAzul.png">
-        <img class="sgp" id="sombraGrado3" src="/images/dialAzul.png">
-        <img class="sgp" id="sombraGrado4" src="/images/dialAzul.png">
-        <img class="sgp" id="sombraGrado5" src="/images/dialAzul.png">
-        <img class="sgp" id="sombraGrado6" src="/images/dialAzul.png">
-        <img class="sgp" id="sombraGrado7" src="/images/dialAzul.png">
-        <img class="sgp" id="sombraGrado8" src="/images/dialAzul.png">
-        <img class="sgp" id="sombraGrado9" src="/images/dialAzul.png">
-        <img class="sgp" id="sombraGrado10" src="/images/dialAzul.png">
+        <img 
+          v-for="col in 10" 
+          :key="'sombraGrado-' + col"
+          class="sgp" 
+          :id="'sombraGrado' + col" 
+          src="/images/dialAzul.png"
+          :style="{
+            display: dialAzulActivo && dialAzulActivo.columna === col ? 'inline' : 'none',
+            top: (dialAzulActivo ? dialAzulActivo.top : 252) + 'px'
+          }"
+        >
         <img id="sombraGradop" src="/images/sombraGradop.png" :style="estiloSombraGradop">
 
         <!-- Grados / Círculos punteados por columna (g1..g10) -->
@@ -623,8 +928,20 @@ const entrarAlJuego = () => {
           <div 
             v-for="g in 8" 
             :key="'c-' + col + '-g-' + g"
-            :class="['g' + col, 'gris', { 'circulo-visible': col <= serieSeleccionada }]"
+            :class="[
+              'g' + col, 
+              'gris', 
+              { 
+                'circulo-visible': col <= serieSeleccionada,
+                'circulo-incorrecto': circulosIncorrectos.has('c-' + col + '-g-' + g)
+              }
+            ]"
             :id="'grado' + g + '-' + col"
+            @mouseenter="hoverCirculoRespuesta(col - 1, g - 1)"
+            @mouseleave="salirCirculoRespuesta(col - 1, g - 1)"
+            @dragover="permitirSoltar($event, col - 1)"
+            @drop="soltarEnGrado(col - 1, g - 1)"
+            @click="clickCirculoGrado(col - 1, g - 1)"
           ></div>
         </template>
 
@@ -634,12 +951,14 @@ const entrarAlJuego = () => {
           :key="'gradop-' + col"
           class="gp" 
           :id="'gradop' + col" 
-          src="/images/gradop.png" 
-          draggable="true"
+          :src="gradopPosiciones[col - 1]?.imagen || '/images/gradop.png'" 
+          :draggable="ejercicioActivo && !reproduciendo && !evaluando && !gradopPosiciones[col - 1]?.acertado"
+          @dragstart="iniciarArrastre($event, col - 1)"
           :style="{
             left: (gradopPosiciones[col - 1]?.left || (490 + (col - 1) * 39)) + 'px',
             top: (gradopPosiciones[col - 1]?.top || 145) + 'px',
-            display: gradopPosiciones[col - 1]?.visible ? 'inline' : 'none'
+            display: gradopPosiciones[col - 1]?.visible ? 'inline' : 'none',
+            cursor: gradopPosiciones[col - 1]?.acertado ? 'default' : 'grab'
           }"
         >
 
@@ -806,9 +1125,27 @@ const entrarAlJuego = () => {
   opacity: 0.9 !important;
 }
 
-/* Círculos punteados correspondientes a las columnas de la serie */
+/* Grados con signo de interrogación (gradop) */
+.gp {
+  /* Evita que el elemento que se mueve debajo del cursor interrumpa el hover del círculo punteado (parpadeo) */
+  pointer-events: none;
+  transition: top 0.08s ease-out;
+}
+
+/* Cuando ya está fijado o en reposo esperando arrastre, o cuando el usuario interactúa */
+.gp.arrastrable {
+  pointer-events: auto;
+}
+
+/* Grados / Círculos punteados correspondientes a las columnas de la serie */
 .circulo-visible {
   border: 1px dashed gray !important;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.circulo-visible.circulo-incorrecto {
+  background-color: rgb(50, 50, 50) !important;
 }
 
 /* Resaltado de secciones activas (permanecen encendidas una vez activadas) */
