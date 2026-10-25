@@ -966,23 +966,6 @@ body {
   	text-align: left;
 }
 
-#fecha {
-	left: 892px;
-  	top: 43px;
-  	position: absolute;
-  	font-size: 14px;
-  	color: rgb(100,100,100);
-  	text-align: left;
-}
-#reloj {
-	left: 1000px;
-  	top: 140px;
-  	position: absolute;
-  	font-size: 16px;
-  	color: rgb(0,0,0);
-  	text-align: left;
-}
-
 #titdat {
 	left: 900px;
   	top: 189px;

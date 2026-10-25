@@ -150,7 +150,94 @@ const tonalidades = [
 // Marcadores
 const aciertos = ref(0)
 const fallos = ref(0)
-const reloj = ref('0:00:00.00')
+const reloj = ref('00:00.0')
+
+// Control del cronómetro
+let idIntervaloReloj = null
+let tiempoInicioSesion = null
+let tiempoTranscurridoSesion = ref(0)
+const relojCorriendo = ref(false)
+
+const iniciarReloj = () => {
+  if (idIntervaloReloj) return
+  relojCorriendo.value = true
+  tiempoInicioSesion = Date.now()
+  idIntervaloReloj = setInterval(() => {
+    const delta = Date.now() - tiempoInicioSesion
+    tiempoTranscurridoSesion.value = delta
+    reloj.value = formatearTiempoReloj(delta)
+  }, 100)
+}
+
+const detenerReloj = () => {
+  relojCorriendo.value = false
+  if (idIntervaloReloj) {
+    clearInterval(idIntervaloReloj)
+    idIntervaloReloj = null
+  }
+}
+
+const reiniciarReloj = () => {
+  detenerReloj()
+  tiempoInicioSesion = null
+  tiempoTranscurridoSesion.value = 0
+  reloj.value = '00:00.0'
+}
+
+// Formateador de tiempo: minutos, segundos y décimas (mm:ss.d)
+const formatearTiempoReloj = (milisegundos) => {
+  let ms = milisegundos
+  const min = Math.trunc(ms / 60000)
+  ms = ms % 60000
+  const seg = Math.trunc(ms / 1000)
+  const dec = Math.trunc((ms % 1000) / 100)
+  const minStr = min < 10 ? '0' + min : String(min)
+  const segStr = seg < 10 ? '0' + seg : String(seg)
+  return `${minStr}:${segStr}.${dec}`
+}
+
+// ---------------------------------------------------------
+// Historial de registros (Persistencia con localStorage)
+// ---------------------------------------------------------
+const CLAVE_STORAGE = 'gradosweb_registros'
+const registros = ref([])
+
+const cargarRegistros = () => {
+  try {
+    const guardados = localStorage.getItem(CLAVE_STORAGE)
+    if (guardados) {
+      registros.value = JSON.parse(guardados)
+    }
+  } catch (e) {
+    registros.value = []
+  }
+}
+cargarRegistros()
+
+const guardarRegistroSesion = (registro) => {
+  registros.value.unshift(registro) // El más reciente arriba
+  try {
+    localStorage.setItem(CLAVE_STORAGE, JSON.stringify(registros.value))
+  } catch (e) {}
+}
+
+const limpiarHistorial = () => {
+  if (confirm('¿Deseas borrar todo el historial de ejercicios guardado?')) {
+    registros.value = []
+    try {
+      localStorage.removeItem(CLAVE_STORAGE)
+    } catch (e) {}
+  }
+}
+
+// Obtener nombre formateado de la tonalidad actual para el registro
+const obtenerNombreTonalidadActual = () => {
+  const t = tonalidades.find(ton => ton.id === tonalidadSeleccionada.value)
+  if (!t) return ''
+  const sufijoModo = modoSeleccionado.value === 0 ? 'M' : modoSeleccionado.value === 1 ? 'm.arm' : modoSeleccionado.value === 2 ? 'm.nat' : 'm.mel'
+  const nombreTon = (modoSeleccionado.value === 0 || modoSeleccionado.value === null) ? t.nombreMayor : t.nombreMenor
+  return `${nombreTon} ${sufijoModo}`
+}
 
 // Estado del juego / ejercicio
 const juegoIniciado = ref(false) // Se activa al pulsar 'Nuevo ejercicio / Nuevo sonido'
@@ -169,6 +256,7 @@ const bolsaGradosPersistente = ref([0, 1, 2, 3, 4, 5, 6, 7])
 
 // Dial de columna que señala el sonido actual (sombraGradop)
 const columnaActivaDial = ref(null) // null cuando no está sonando nada, o índice 0..9 según la columna que suena
+const metaAlcanzada = ref(false)
 const estiloSombraGradop = computed(() => {
   if (columnaActivaDial.value === null) {
     return { display: 'none' }
@@ -192,7 +280,7 @@ const panelesAjusteBloqueados = computed(() => {
 // Botones de trabajo con los ejercicios ('Nuevo sonido', 'Repetir sonido', 'Oir tonalidad', 'Reiniciar')
 // Solo están activos cuando el juego está configurado y listo, y NO mientras se espera reconfiguración/reinicio tras meta
 const botonesTrabajoActivos = computed(() => {
-  return pasoConfig.value === 'listo' && !reproduciendo.value
+  return pasoConfig.value === 'listo' && !reproduciendo.value && !metaAlcanzada.value
 })
 
 // Textos de los botones según el tamaño de la serie
@@ -363,6 +451,8 @@ const tocarEjercicio = async (nuevaSecuencia = false) => {
 const manejarNuevoSonido = () => {
   if (pasoConfig.value !== 'listo' || reproduciendo.value) return
   juegoIniciado.value = true
+  // Iniciar cronómetro con el primer sonido del ejercicio si aún no está corriendo
+  iniciarReloj()
   tocarEjercicio(true)
 }
 
@@ -374,9 +464,11 @@ const manejarRepetirSonido = () => {
 // Función para reiniciar el tablero y el estado de juego
 const reiniciarTablero = () => {
   if (reproduciendo.value) return
+  reiniciarReloj()
   columnaActivaDial.value = null
   juegoIniciado.value = false
   ejercicioActivo.value = false
+  metaAlcanzada.value = false
   listaGradosEjercicio.value = []
   gradopPosiciones.value = Array.from({ length: 10 }, (_, i) => ({
     visible: false,
@@ -438,8 +530,10 @@ const finalizarSesionAlcanzada = () => {
   modoActivado.value = true
   tonalidadActivada.value = true
 
+  // Ahora sí pasa al paso 'reconfigurar' (mueve el encabezado a top: 478px, left: 296px)
+  pasoConfig.value = 'reconfigurar'
+  metaAlcanzada.value = false
   // Estado de espera para reconfiguración
-  
   cambiarInstruccion('Selecciona una tonalidad para comenzar el nuevo ejercicio')
   reproducirSonidoTeclado()
 }
@@ -650,7 +744,23 @@ const evaluarRespuestas = async () => {
 
     // Si alcanzó la meta propuesta
     if (metaSeleccionada.value && aciertos.value >= metaSeleccionada.value) {
-      pasoConfig.value = 'reconfigurar' //desactiva botones de Nuevo sonido/serie, Repetir y Oir Tonalidad inmediatamente alcanza la meta propuesta.
+      metaAlcanzada.value = true // Desactiva los botones inmediatamente alcanza la meta propuesta.
+      detenerReloj()
+
+      // Registrar datos de la sesión completada
+      const totalIntentos = aciertos.value + fallos.value
+      const porcEficiencia = totalIntentos > 0 ? Math.round((aciertos.value / totalIntentos) * 100) : 100
+      guardarRegistroSesion({
+        id: Date.now(),
+        ts: serieSeleccionada.value,
+        meta: metaSeleccionada.value,
+        tonalidad: obtenerNombreTonalidadActual(),
+        errores: fallos.value,
+        aciertos: aciertos.value,
+        eficiencia: porcEficiencia + '%',
+        tiempo: reloj.value
+      })
+
       await new Promise(resolve => setTimeout(resolve, 600))
       cambiarInstruccion('¡Muy bien! Has alcanzado la meta propuesta.')
       
@@ -721,7 +831,8 @@ const entrarAlJuego = () => {
   if (errorNombre.value || errorCodigo.value) {
     return
   }
-
+  metaAlcanzada.value = false
+  reiniciarReloj()
   fechaRegistro.value = formatearFecha()
   fase.value = 'juego'
   pasoConfig.value = 'serie'
@@ -775,20 +886,53 @@ const entrarAlJuego = () => {
         <img id="fondoinfA" src="/images/fondoinfA.png">
         <img id="fondoinfB" src="/images/fondoinfB.png">
 
-        <div id="reloj">{{ reloj }}</div>
-
         <div id="encabezado" :style="estiloEncabezado">{{ encabezadoTexto }}</div>
         <div id="nomUser">Nombre: {{ nombreUsuario }}</div>
-        <div id="fecha">{{ fechaRegistro }}</div>
 
-        <img id="titdat" src="/images/titulodatos.png">
-        <div class="des" id="des1"></div>
-        <div class="des" id="des2"></div>
-        <div class="des" id="des3"></div>
-        <div class="des" id="des4"></div>
-        <div class="des" id="des5"></div>
-        <div class="des" id="des6"></div>
-        <div class="des" id="des7"></div>
+        <!-- Barra intermedia con Fecha y Reloj (visible solo tras pulsar ENTRAR) -->
+        <div v-if="fase === 'juego'" id="barraInfoSesion">
+          <div id="fecha">{{ fechaRegistro }}</div>
+          <div id="reloj" :class="{ activo: relojCorriendo }">{{ reloj }}</div>
+        </div>
+
+        <!-- Tabla moderna de Registro de Ejercicios -->
+        <div v-if="fase === 'juego'" id="panelRegistro">
+          <button 
+            v-if="registros.length > 0" 
+            class="btn-limpiar-registro" 
+            @click="limpiarHistorial" 
+            title="Reiniciar historial guardado"
+          >&#8635;</button>
+
+          <div class="registro-header-fila">
+            <span class="col-ts" title="Tamaño de la serie">TS</span>
+            <span class="col-me" title="Meta">Me</span>
+            <span class="col-tonal" title="Tonalidad">Tonal.</span>
+            <span class="col-x" title="Errores">X</span>
+            <span class="col-chk" title="Aciertos">&#10003;</span>
+            <span class="col-ef" title="Eficiencia">%</span>
+            <span class="col-time" title="Tiempo">Time</span>
+          </div>
+
+          <div class="registro-cuerpo">
+            <div 
+              v-for="reg in registros" 
+              :key="reg.id" 
+              class="registro-fila"
+            >
+              <span class="col-ts">{{ reg.ts }}</span>
+              <span class="col-me">{{ reg.meta }}</span>
+              <span class="col-tonal">{{ reg.tonalidad }}</span>
+              <span class="col-x">{{ reg.errores }}</span>
+              <span class="col-chk">{{ reg.aciertos }}</span>
+              <span class="col-ef">{{ reg.eficiencia }}</span>
+              <span class="col-time">{{ reg.tiempo }}</span>
+            </div>
+            <div v-if="registros.length === 0" class="registro-vacio">
+              Sin registros aún
+            </div>
+          </div>
+        </div>
 
         <!-- Tonalidades -->
         <template v-if="tonalidadActivada">
@@ -1288,5 +1432,146 @@ const entrarAlJuego = () => {
 .grado:hover {
   opacity: 1 !important;
   filter: drop-shadow(0 0 6px rgb(0, 180, 255)) brightness(1.2);
+}
+
+/* ========================================================
+   Barra con Fecha y Reloj (centrada entre botones y tabla)
+   ======================================================== */
+#barraInfoSesion {
+  position: absolute;
+  left: 291px;
+  top: 585px;
+  width: 535px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  font-family: Futura, sans-serif;
+  z-index: 5;
+}
+
+#fecha {
+  font-size: 13px;
+  color: rgb(107, 110, 116);
+  letter-spacing: 0.3px;
+}
+
+#reloj {
+  font-size: 13.5px;
+  font-family: monospace;
+  font-weight: 600;
+  color: rgb(95, 97, 102); /* Gris suave cuando está inactivo */
+  background: rgba(30, 36, 48, 0.6);
+  padding: 1px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(100, 120, 140, 0.25);
+  letter-spacing: 1px;
+  transition: color 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+#reloj.activo {
+  color: rgb(85, 175, 235); /* Azul moderado (no muy fuerte) al estar activo */
+  border-color: rgba(85, 175, 235, 0.4);
+  box-shadow: 0 0 8px rgba(85, 175, 235, 0.2);
+}
+
+/* ========================================================
+   Panel y Tabla moderna de Registro de Ejercicios
+   Ubicada debajo de los botones de Oir tonalidad hasta Reiniciar
+   ======================================================== */
+#panelRegistro {
+  position: absolute;
+  left: 291px;
+  top: 620px; /* Espacio para ubicar la barra de fecha y reloj arriba */
+  width: 535px;
+  background: rgba(14, 17, 24, 0.9);
+  border: 1px solid rgba(80, 110, 140, 0.3);
+  border-radius: 5px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  z-index: 5;
+}
+
+.btn-limpiar-registro {
+  position: absolute;
+  right: 5px;
+  top: 3px;
+  background: transparent;
+  border: none;
+  color: rgba(140, 160, 180, 0.6);
+  font-size: 15px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+  transition: all 0.2s ease;
+  z-index: 10;
+}
+
+.btn-limpiar-registro:hover {
+  color: rgb(100, 190, 255);
+  transform: rotate(90deg);
+}
+
+.registro-header-fila {
+  display: flex;
+  align-items: center;
+  background: rgba(22, 28, 38, 0.95);
+  border-bottom: 1px solid rgba(80, 110, 140, 0.3);
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: bold;
+  color: rgb(130, 155, 180); /* Tono suave, no compite con los botones */
+  text-align: center;
+  letter-spacing: 0.5px;
+}
+
+.registro-cuerpo {
+  max-height: 125px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(80, 110, 140, 0.25) transparent;
+}
+
+.registro-cuerpo::-webkit-scrollbar {
+  width: 5px;
+}
+
+.registro-cuerpo::-webkit-scrollbar-thumb {
+  background-color: rgba(80, 110, 140, 0.25);
+  border-radius: 3px;
+}
+
+.registro-fila {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  font-size: 11px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  text-align: center;
+  transition: background-color 0.15s ease;
+}
+
+.registro-fila:hover {
+  background-color: rgba(255, 255, 255, 0.04);
+}
+
+/* Colores atenuados y discretos para armonizar visualmente */
+.col-ts { flex: 1; color: rgb(160, 165, 175); }
+.col-me { flex: 1; color: rgb(100, 150, 195); }
+.col-tonal { flex: 2; color: rgb(175, 180, 190); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; }
+.col-x { flex: 1; color: rgb(185, 110, 110); }
+.col-chk { flex: 1; color: rgb(105, 175, 130); }
+.col-ef { flex: 1.2; color: rgb(190, 160, 100); }
+.col-time { flex: 1.5; color: rgb(130, 165, 185); font-family: monospace; font-size: 10.5px; }
+
+.registro-vacio {
+  padding: 14px 10px;
+  font-size: 11px;
+  color: rgba(140, 150, 165, 0.5);
+  font-style: italic;
+  text-align: center;
 }
 </style>
